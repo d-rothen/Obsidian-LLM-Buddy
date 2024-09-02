@@ -3,12 +3,12 @@ import { Anthropic } from '@anthropic-ai/sdk';
 
 interface AnthropicPluginSettings {
     apiKey: string;
-    activationHotkey: string;
+	maxTokensToSample: number;
 }
 
 const DEFAULT_SETTINGS: AnthropicPluginSettings = {
     apiKey: '',
-    activationHotkey: 'Ctrl+Shift+A'
+	maxTokensToSample: 1000
 }
 
 const INSTRUCTION_PREFIX = "You are a helpful AI assistant. Assist with the finishing of the following note. If the last sentence in the note is a specific instruction, follow that instruction, else simply fill out the remaining content such that it adheres to the title and general idea of the note. Try to keep the level of detail consistent with the note. If the level of detail is not discernable, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${conten}$$.";
@@ -22,12 +22,7 @@ export default class AnthropicPlugin extends Plugin {
 
         this.addSettingTab(new AnthropicSettingTab(this.app, this));
 
-        this.registerCodeMirror((cm: CodeMirror.Editor) => {
-            cm.setOption("extraKeys", {
-                [this.settings.activationHotkey]: this.activateAnthropicAPI.bind(this)
-            });
-        });
-		this.addCommand({
+	    this.addCommand({
             id: 'activate-anthropic-api',
             name: 'Activate Anthropic API',
             editorCallback: (editor: Editor) => this.activateAnthropicAPI(editor)
@@ -49,7 +44,7 @@ export default class AnthropicPlugin extends Plugin {
 		try {
 			const stream = await this.anthropic.completions.create({
 				model: 'claude-2',
-				max_tokens_to_sample: 1000,
+				max_tokens_to_sample: this.settings.maxTokensToSample,
 				prompt: `${INSTRUCTION_PREFIX}\n\nHuman: ${content}\n\nAssistant:`,
 				stream: true,
 			});
@@ -89,15 +84,19 @@ class AnthropicSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
-            .setName('Activation Hotkey')
-            .setDesc('Set the hotkey to activate the Anthropic API')
+		new Setting(containerEl)
+            .setName('Max sampled Tokens')
+            .setDesc('Set the maximum number of tokens the model samples from.')
             .addText(text => text
-                .setPlaceholder('Enter hotkey (e.g., Ctrl+Shift+A)')
-                .setValue(this.plugin.settings.activationHotkey)
+                .setPlaceholder('Enter max tokens')
+                .setValue(String(this.plugin.settings.maxTokensToSample))
                 .onChange(async (value) => {
-                    this.plugin.settings.activationHotkey = value;
-                    await this.plugin.saveSettings();
+                    const numValue = Number(value);
+                    if (!isNaN(numValue)) {
+                        this.plugin.settings.maxTokensToSample = numValue;
+                        await this.plugin.saveSettings();
+                    }
                 }));
-    }
+
+	}
 }
