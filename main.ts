@@ -4,14 +4,16 @@ import { Anthropic } from '@anthropic-ai/sdk';
 interface AnthropicPluginSettings {
     apiKey: string;
 	maxTokensToSample: number;
+	model: string;
 }
 
 const DEFAULT_SETTINGS: AnthropicPluginSettings = {
     apiKey: '',
-	maxTokensToSample: 1000
+	maxTokensToSample: 1000,
+	model: 'claude-3-5-sonnet-20240620'
 }
 
-const INSTRUCTION_PREFIX = "You are a helpful AI assistant. Assist with the finishing of the following note. If the last sentence in the note is a specific instruction, follow that instruction, else simply fill out the remaining content such that it adheres to the title and general idea of the note. Try to keep the level of detail consistent with the note. If the level of detail is not discernable, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${conten}$$.";
+const SYSTEM_PROMPT = "You are a helpful AI assistant. Assist with the finishing of the following note. Please structure the note in a way that is (obsidian-) markdown compatible. If the last sentence in the note is a specific instruction, follow that instruction, else simply fill out the remaining content such that it adheres to the title and general idea of the note. Try to keep the level of detail consistent with the note. If the level of detail is not discernable, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${content}$$. The file title and content will be presented like: Title: [...]\nContent[...]. Please write the response without any preamble.";
 
 export default class AnthropicPlugin extends Plugin {
     settings: AnthropicPluginSettings;
@@ -41,22 +43,36 @@ export default class AnthropicPlugin extends Plugin {
 	async activateAnthropicAPI(editor: Editor) {
 		const content = editor.getValue();
 
-		try {
-			const stream = await this.anthropic.completions.create({
-				model: 'claude-2',
-				max_tokens_to_sample: this.settings.maxTokensToSample,
-				prompt: `${INSTRUCTION_PREFIX}\n\nHuman: ${content}\n\nAssistant:`,
-				stream: true,
-			});
+		const file = this.app.workspace.getActiveFile();
+	    const fileTitle = file ? file.basename : 'Untitled';
 
-			let response = '';
-			for await (const completion of stream) {
-				response += completion.completion;
-				editor.replaceSelection(completion.completion);
-			}
-		} catch (error) {
-			new Notice('Error: ' + error.message);
-		}
+       try {
+            const stream = await this.anthropic.messages.create({
+                model: this.settings.model,
+                max_tokens: this.settings.maxTokensToSample,
+                messages: [
+                    { role: "user", content: `Title: ${fileTitle}\nContent: ${content}` }
+                ],
+                system: SYSTEM_PROMPT,
+                stream: true,
+            });
+
+            let response = '';
+
+			for await (const chunk of stream) {
+				if (chunk.type === 'content_block_start' || chunk.type === 'content_block_delta') {
+					let text = '';
+					if ('delta' in chunk && chunk.delta && 'text' in chunk.delta) {
+						text = chunk.delta.text;
+					}
+					response += text;
+					editor.replaceSelection(text);
+				}
+			}    
+        } catch (error) {
+            new Notice('Error: ' + error.message);
+        }
+
 	}
 }
 
@@ -97,6 +113,16 @@ class AnthropicSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }
                 }));
-
+		
+		new Setting(containerEl)
+            .setName('Model')
+            .setDesc('Select the Claude model to use')
+		    .addText(text => text
+                .setPlaceholder('claude-3-5-sonnet-20240620')
+                .setValue(this.plugin.settings.model)
+                .onChange(async (value) => {
+                    this.plugin.settings.model = value;
+                    await this.plugin.saveSettings();
+                }));
 	}
 }
