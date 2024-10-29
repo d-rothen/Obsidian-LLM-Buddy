@@ -1,7 +1,7 @@
 {
 	"id": "llm-buddy",
 	"name": "LLM Buddy",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "0.15.0",
 	"description": "Adds a llm helper for writing notes",
 	"author": "Daniel Rothenpieler",
