@@ -1,11 +1,11 @@
 {
 	"id": "llm-buddy",
 	"name": "LLM Buddy",
-	"version": "1.0.6",
+	"version": "1.0.8",
 	"minAppVersion": "0.15.0",
 	"description": "Adds a llm helper for writing notes",
 	"author": "Daniel Rothenpieler",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"authorUrl": "https://github.com/d-rothen",
+	"fundingUrl": "https://www.paypal.com/paypalme/draon",
 	"isDesktopOnly": false
 }

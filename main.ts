@@ -1,65 +1,283 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, Command } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, Command } from 'obsidian';
 import { Anthropic } from '@anthropic-ai/sdk';
+import * as YAML from 'yaml';
 
 interface AnthropicPluginSettings {
     apiKey: string;
     maxTokensToSample: number;
     model: string;
+	betas: string;
+	prompts: []
+}
+
+interface Prompt {
+    id: string;
+    name: string;
+    promptText: string;
+	useSelectionAsInstruction: boolean;
 }
 
 const DEFAULT_SETTINGS: AnthropicPluginSettings = {
     apiKey: '',
     maxTokensToSample: 1000,
-    model: 'claude-3-5-sonnet-20240620'
+    model: 'claude-3-5-sonnet-20241022',
+	betas: 'pdfs-2024-09-25',
+	prompts: []
 }
-
-const SYSTEM_PROMPT = "You are a helpful AI assistant. Assist with the finishing of the following note. Please structure the note in a way that is (obsidian-) markdown compatible. If the last sentence in the note is a specific instruction, follow that instruction, else simply fill out the remaining content such that it adheres to the title and general idea of the note. Try to keep the level of detail consistent with the note. If the level of detail is not discernable, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${content}$$. The file title and content will be presented like: Title: [...]\nContent[...]. When writing a note, do your best to structure the information in a concise way - and go deep and in-depth when needed. Since I am using Obsidian for notetaking, feel free to make use of its features, espacially referencing other notes like so for some Topic X: [[Topic X]] (Assume for any topic you need to explain the new note, this [[Topic X]] would already exist and reference it. Do not outsource the whole explanation to that reference but rather incorporate it in the explanation). The goal is to create a knowledge corpus that allows me to quickly catch up on scientific topics when I revisit them later. Please adhere to the following style guides:\n When writing in an empty node - or under a particular header where there is need for a formal (i.e. mathematical or physics) definition, do a concise scientific definition (as one may see in a lectures script) inside a definition paragraph that looks like this:\n>[!Definition] $DefinitionTitle\n>Line1\n>Line2 etc. Note the need for > to do indentation. When such a block is finished, simply use \n\n to write below it. Instead of [!Definition] - if need be - you can also use [!Remark] or [!Lemma]. If you deem a topic to be complex, feel free to be very extensive on covering the subject. Please write the response without any preamble.";
-
-const TASK_PROMPT = "You are a helpful AI assistant. Execute the following request that is given in the 'Instruction: ' prompt. Please structure your answer in a way that is (obsidian-) markdown compatible. Try to be pedantic yet concise. Assume that the use case is to produce scientifically accurate answers. If no level of detail is explicitly requested, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${content}$$.  Since I am using Obsidian for notetaking, feel free to make use of its features, like referencing other notes like so for some Topic X: [[Topic X]] (simply assume cross links exist), or embedded code or mermaid like so:\n ```mermaid\n...\n```. Note the possibilities for highlighting sections if you are to explain complex topics:\n>[!Definition] $DefinitionTitle\n>Line1\n>Line2 etc. Note the need for > to do indentation. When such a block is finished, simply use \n\n to write below it. Instead of [!Definition] you can also use [!Remark] or [!Lemma]. Make sure to incorporate these obsidian features when it improves your responses structure, but do not go against explicit instructions. Please perform the task to the best of your abilities. You will be given a reward that is dependent on the evaluation of your performance. Make sure to respond solely with the task that you are given, and leave out any additional formalities or preambles."
 
 export default class AnthropicPlugin extends Plugin {
     settings: AnthropicPluginSettings;
     anthropic: Anthropic;
+	registeredCommands: string[] = [];
+
+    onunload() {
+        // Unregister all commands when the plugin is unloaded
+        this.unregisterAllCommands();
+    }
 
     async onload() {
         await this.loadSettings();
 
         this.addSettingTab(new AnthropicSettingTab(this.app, this));
+		this.registerAllPrompts();
 
-        // Existing command to activate Anthropic API on entire content
-        this.addCommand({
-            id: 'activate-anthropic-api',
-            name: 'Activate Anthropic API on Entire Note',
-            editorCallback: (editor: Editor) => this.activateAnthropicAPI(editor)
-        });
 
-        // New command to execute selected instruction
+        // Register the command for the ad-hoc prompt
         this.addCommand({
-            id: 'execute-selected-instruction',
-            name: 'Execute Selected Instruction with Anthropic API',
-            editorCallback: (editor: Editor) => this.taskAnthropicApi(editor),
-            // Optional: Assign a default hotkey (users can override in Obsidian settings)
-            hotkeys: [
-                {
-                    modifiers: ["Ctrl", "Alt"],
-                    key: "T" // You can choose any key combination you prefer
-                }
-            ]
+            id: 'anthropic-adhoc-prompt',
+            name: 'Execute Ad-Hoc Prompt',
+            editorCallback: (editor: Editor) => {
+                new AdHocPromptModal(this.app, this, editor).open();
+            }
         });
+    }
+
+    registerAllPrompts() {
+        for (const prompt of this.settings.prompts) {
+            this.registerPromptCommand(prompt);
+        }
+    }
+
+    unregisterAllCommands() {
+        for (const commandId of this.registeredCommands) {
+            // Unregister the command
+            // Obsidian doesn't provide a direct way to unregister commands,
+            // but commands are automatically unregistered when the plugin is unloaded.
+            // For dynamic commands, we need to manage them carefully.
+            delete this.app.commands.commands[commandId];
+            delete this.app.commands.editorCommands[commandId];
+        }
+        this.registeredCommands = [];
+    }
+
+    registerPromptCommand(prompt: Prompt) {
+        const commandId = `anthropic-prompt-${prompt.id}`;
+        this.addCommand({
+            id: commandId,
+            name: prompt.name,
+            editorCallback: (editor: Editor) => this.executePrompt(prompt, editor)
+        });
+        this.registeredCommands.push(commandId);
     }
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-        this.anthropic = new Anthropic({ apiKey: this.settings.apiKey, dangerouslyAllowBrowser: true });
+        this.anthropic = new Anthropic({ apiKey: this.settings.apiKey, dangerouslyAllowBrowser: true, beta: 'pdfs-2024-09-25' });
     }
 
-	
-    async taskAnthropicApi(editor: Editor) {
-        const instruction = editor.getSelection();
+	createContent(title: string, tags: string, note: string){
+		return `<title>${title}</title>\n<tags>${tags.join(";")}</tags>\n<note>${note}</note>`
+	}
 
-        if (!instruction) {
-            new Notice('Please select some text to send to the API.');
-            return;
+	createTaskSelectionContent(title: string, tags: string, note: string, selection: string){
+		return `<instruction>${selection}</instruction>\n<context>\n<title>${title}</title>\n<tags>${tags.join(";")}</tags>\n<note>${note}</note>\n</context>`
+	}
+
+	createSelectionContent(selection: string){
+		return `<instruction>${selection}</instruction>`
+	}
+
+	extractYamlAndContentFromEditor(editor: Editor): [string, string[], string[], string] {
+		const content = editor.getValue();
+		let rawYaml = '';
+		let tags: string[] = [];
+		let aliases: string[] = [];
+		let noteContent = content;
+
+		// Regular expression to match YAML front matter at the beginning of the note
+		const yamlRegex = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
+		const match = content.match(yamlRegex);
+
+		if (match) {
+			rawYaml = match[0];
+			const yamlContent = match[1];
+
+			// Parse YAML content
+			let parsedYaml;
+			try {
+				parsedYaml = YAML.parse(yamlContent);
+			} catch (error) {
+				new Notice('Error parsing YAML front matter: ' + error.message);
+				parsedYaml = {};
+			}
+
+			// Extract tags and aliases
+			if (parsedYaml.tags) {
+				if (Array.isArray(parsedYaml.tags)) {
+					tags = parsedYaml.tags;
+				} else if (typeof parsedYaml.tags === 'string') {
+					tags = [parsedYaml.tags];
+				}
+			}
+
+			if (parsedYaml.aliases) {
+				if (Array.isArray(parsedYaml.aliases)) {
+					aliases = parsedYaml.aliases;
+				} else if (typeof parsedYaml.aliases === 'string') {
+					aliases = [parsedYaml.aliases];
+				}
+			}
+
+			// Remove the YAML front matter from the note content
+			noteContent = content.substring(match[0].length).trimStart();
+		}
+
+		return [rawYaml, tags, aliases, noteContent];
+}
+
+
+	extractYamlAndContentFromApp(editor: Editor, app: App): [string, string[], string[], string] {
+		const content = editor.getValue();
+		const file = app.workspace.getActiveFile();
+
+		let rawYaml = '';
+		let tags: string[] = [];
+		let aliases: string[] = [];
+		let noteContent = content;
+
+		if (file) {
+			const metadata = app.metadataCache.getFileCache(file);
+			if (metadata && metadata.frontmatter) {
+				const frontmatter = metadata.frontmatter;
+
+				// Extract raw YAML front matter
+				const start = frontmatter.position.start.offset;
+				const end = frontmatter.position.end.offset;
+
+				rawYaml = content.substring(start, end);
+
+				// Extract tags and aliases
+				if (frontmatter.tags) {
+					if (Array.isArray(frontmatter.tags)) {
+						tags = frontmatter.tags;
+					} else if (typeof frontmatter.tags === 'string') {
+						tags = [frontmatter.tags];
+					}
+				}
+
+				if (frontmatter.aliases) {
+					if (Array.isArray(frontmatter.aliases)) {
+						aliases = frontmatter.aliases;
+					} else if (typeof frontmatter.aliases === 'string') {
+						aliases = [frontmatter.aliases];
+					}
+				}
+
+				// Remove the YAML front matter from the note content
+				noteContent = content.substring(end).trimStart();
+			}
+		}
+
+		return [rawYaml, tags, aliases, noteContent];
+	}
+
+
+    async executePrompt(prompt: Prompt, editor: Editor) {
+        const { promptText, useSelectionAsInstruction } = prompt;
+
+        let selectedText = editor.getSelection();
+        const systemPrompt = promptText;
+        //const note = editor.getValue();
+		//const tags = this.getTags()
+        const file = this.app.workspace.getActiveFile();
+        const title = file ? file.basename : 'Untitled';
+
+		const [rawYaml, tags, aliases, noteContent] = this.extractYamlAndContentFromEditor(editor);
+		const note = noteContent
+
+		// Prepare content for the API
+        const contentArray: any[] = [];
+		let textContent;
+
+		if (selectedText){
+			if (useSelectionAsInstruction) {
+                // Get positions of the selection
+                const from = editor.getCursor('from');
+                const to = editor.getCursor('to');
+
+                const fromOffset = editor.posToOffset(from);
+                const toOffset = editor.posToOffset(to);
+                // Remove the selected text from the content
+                const slicedNote = note.slice(0, fromOffset) + note.slice(toOffset);
+				//TODO maybe keep the selected text to have an "anchor" that the model knows where exactly information will be inserted?
+				//taskPrefix = `Please resolve the following for the provided Context: ${selectedText}\n\n <Context>`
+
+				//TODO selection is not sliced?
+				textContent = this.createTaskSelectionContent(title, tags, slicedNote, selectedText)
+			} else {
+				textContent = this.createSelectionContent(selectedText)
+			}
+		} else {
+			textContent = this.createContent(title, tags, note)
+		}
+
+		console.log(promptText)
+		console.log(textContent)
+
+        // Add the main content
+        contentArray.push({
+            "type": "text",
+            "text": textContent
+		});
+
+        // Parse the content for linked images and PDFs
+		// TODO Streamline, such that I pass one parameter etc.
+        const linkedFiles = await this.getLinkedFiles(note + "\n" + selectedText);
+        // Process each linked file
+        for (const file of linkedFiles) {
+            try {
+                const data = await this.app.vault.readBinary(file);
+                const base64Data = Buffer.from(data).toString('base64');
+
+                // Get the media type
+                const mediaType = this.getMediaType(file.extension);
+
+                // Add to content array
+                if (file.extension === 'pdf') {
+                    contentArray.push({
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            //"media_type": mediaType,
+                            "media_type": 'application/pdf',
+                            "data": base64Data
+                        }
+                    });
+                } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg'].includes(file.extension)) {
+                    contentArray.push({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mediaType,
+                            "data": base64Data
+                        }
+                    });
+                } else {
+                    new Notice(`Unsupported file type: ${file.extension}`);
+                }
+            } catch (error) {
+                new Notice(`Error reading file ${file.path}: ${error.message}`);
+            }
         }
 
         // Remove the selected text and set cursor to start of selection
@@ -67,18 +285,18 @@ export default class AnthropicPlugin extends Plugin {
         editor.replaceSelection('');
         editor.setCursor(cursorFrom);
 
+        // Now, send the contentArray to the API
         try {
-            const stream = await this.anthropic.messages.create({
+            const stream = await this.anthropic.beta.messages.create({
                 model: this.settings.model,
+                betas: this.settings.betas.split(';'),
                 max_tokens: this.settings.maxTokensToSample,
                 messages: [
-                    { role: "user", content: `Instruction:\n${instruction}` }
+                    { role: "user", content: contentArray }
                 ],
-                system: TASK_PROMPT,
+                system: systemPrompt,
                 stream: true,
             });
-
-            let response = '';
 
             for await (const chunk of stream) {
                 if (chunk.type === 'content_block_start' || chunk.type === 'content_block_delta') {
@@ -86,57 +304,61 @@ export default class AnthropicPlugin extends Plugin {
                     if ('delta' in chunk && chunk.delta && 'text' in chunk.delta) {
                         text = chunk.delta.text;
                     }
-                    response += text;
                     editor.replaceSelection(text);
                 }
             }
-
         } catch (error) {
             new Notice('Error: ' + error.message);
         }
     }
 
-    /**
-     * Function to process the selected instruction using Anthropic API
-     * @param editor - The active editor instance
-     */
-    async activateAnthropicAPI(editor: Editor) {
-        const content = editor.getValue();
-
-        const file = this.app.workspace.getActiveFile();
-        const fileTitle = file ? file.basename : 'Untitled';
-
-        try {
-            const stream = await this.anthropic.messages.create({
-                model: this.settings.model,
-                max_tokens: this.settings.maxTokensToSample,
-				system: SYSTEM_PROMPT,
-                messages: [
-                    { role: "user", content: `Title: ${fileTitle}\nContent: ${content}` }
-                ],
-                stream: true,
-            });
-
-            let response = '';
-
-            for await (const chunk of stream) {
-                if (chunk.type === 'content_block_start' || chunk.type === 'content_block_delta') {
-                    let text = '';
-                    if ('delta' in chunk && chunk.delta && 'text' in chunk.delta) {
-                        text = chunk.delta.text;
-                    }
-                    response += text;
-                    editor.replaceSelection(text);
-                }
-            }
-        } catch (error) {
-            new Notice('Error: ' + (error instanceof Error ? error.message : String(error)));
+    // Helper function to get media type from file extension
+    getMediaType(extension: string): string {
+        switch (extension.toLowerCase()) {
+            case 'pdf':
+                return 'application/pdf';
+            case 'png':
+                return 'image/png';
+            case 'jpg':
+            case 'jpeg':
+                return 'image/jpeg';
+            case 'gif':
+                return 'image/gif';
+            case 'bmp':
+                return 'image/bmp';
+            case 'svg':
+                return 'image/svg+xml';
+            default:
+                return 'application/octet-stream';
         }
     }
 
+    // Helper function to find linked files in content
+    async getLinkedFiles(content: string): Promise<TFile[]> {
+        const linkedFiles: TFile[] = [];
+        const linkRegex = /!\[\[([^\]]+)\]\]/g;
+        let match;
+        while ((match = linkRegex.exec(content)) !== null) {
+            const fileName = match[1];
+
+            // Resolve the file
+            const linkedFile = this.app.metadataCache.getFirstLinkpathDest(fileName, '');
+
+            if (linkedFile instanceof TFile) {
+                linkedFiles.push(linkedFile);
+            } else {
+                new Notice(`File not found: ${fileName}`);
+            }
+        }
+        return linkedFiles;
+    }
+
+	
     async saveSettings() {
         await this.saveData(this.settings);
         this.anthropic = new Anthropic({ apiKey: this.settings.apiKey, dangerouslyAllowBrowser: true });
+        this.unregisterAllCommands();
+        this.registerAllPrompts();
     }
 }
 
@@ -186,12 +408,169 @@ class AnthropicSettingTab extends PluginSettingTab {
             .setName('Model')
             .setDesc('Select the Claude model to use')
             .addText(text => text
-                .setPlaceholder('claude-3-5-sonnet-20240620')
+                .setPlaceholder('claude-3-5-sonnet-20241022')
                 .setValue(this.plugin.settings.model)
                 .onChange(async (value) => {
                     this.plugin.settings.model = value;
                     await this.plugin.saveSettings();
                 }));
+	
+		new Setting(containerEl)
+            .setName('Beta Features')
+            .setDesc('Select the Claude Beta Modules')
+            .addText(text => text
+                .setPlaceholder('pdfs-2024-09-25')
+                .setValue(this.plugin.settings.betas)
+                .onChange(async (value) => {
+                    this.plugin.settings.betas = value;
+                    await this.plugin.saveSettings();
+                }));
+
+		
+        containerEl.createEl('h2', { text: 'Custom Prompts' });
+
+        this.plugin.settings.prompts.forEach((prompt, index) => {
+            this.buildPromptSetting(containerEl, prompt, index);
+        });
+
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Add Prompt')
+                .onClick(() => {
+                    const newPrompt: Prompt = {
+                        id: Date.now().toString(),
+                        name: 'New Prompt',
+                        promptText: ''
+                    };
+                    this.plugin.settings.prompts.push(newPrompt);
+                    this.plugin.saveSettings();
+                    this.display();
+                }));
+	}
+
+	buildPromptSetting(containerEl: HTMLElement, prompt: Prompt, index: number) {
+        const setting = new Setting(containerEl)
+            .setName(`Prompt ${index + 1}`)
+            .setDesc('Configure your custom prompt');
+
+        setting.addText(text => text
+            .setPlaceholder('Command Name')
+            .setValue(prompt.name)
+            .onChange(async (value) => {
+                prompt.name = value;
+                await this.plugin.saveSettings();
+            }));
+
+        setting.addTextArea(textArea => textArea
+            .setPlaceholder('Prompt Text')
+            .setValue(prompt.promptText)
+            .onChange(async (value) => {
+                prompt.promptText = value;
+                await this.plugin.saveSettings();
+            }));
+
+		// Add toggle for useSelectionAsInstruction
+        new Setting(containerEl)
+            .setName('Full Context')
+            .setDesc('When text is selected, use it as the instruction with rest of note as context. Else only the selection is used for context.')
+				.addToggle(toggle => toggle
+                .setValue(prompt.useSelectionAsInstruction)
+                .onChange(async (value) => {
+                    prompt.useSelectionAsInstruction = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+
+        setting.addExtraButton(cb => {
+            cb.setIcon('up-chevron-glyph')
+                .setTooltip('Move Up')
+                .onClick(() => {
+                    if (index > 0) {
+                        const prompts = this.plugin.settings.prompts;
+                        [prompts[index - 1], prompts[index]] = [prompts[index], prompts[index - 1]];
+                        this.plugin.saveSettings();
+                        this.display();
+                    }
+                });
+        });
+
+        setting.addExtraButton(cb => {
+            cb.setIcon('down-chevron-glyph')
+                .setTooltip('Move Down')
+                .onClick(() => {
+                    const prompts = this.plugin.settings.prompts;
+                    if (index < prompts.length - 1) {
+                        [prompts[index], prompts[index + 1]] = [prompts[index + 1], prompts[index]];
+                        this.plugin.saveSettings();
+                        this.display();
+                    }
+                });
+        });
+
+        setting.addExtraButton(cb => {
+            cb.setIcon('cross')
+                .setTooltip('Delete')
+                .onClick(() => {
+                    this.plugin.settings.prompts.splice(index, 1);
+                    this.plugin.saveSettings();
+                    this.display();
+                });
+        });
+
     }
 }
 
+// Modal class for ad-hoc prompt input
+class AdHocPromptModal extends Modal {
+    plugin: AnthropicPlugin;
+    editor: Editor;
+
+    constructor(app: App, plugin: AnthropicPlugin, editor: Editor) {
+        super(app);
+        this.plugin = plugin;
+        this.editor = editor;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+
+        contentEl.createEl('h2', { text: 'Enter System Prompt' });
+
+        const promptInput = new Setting(contentEl)
+            .setName('System Prompt')
+            .setDesc('Enter the system prompt to execute')
+            .addTextArea(text => {
+                text
+                    .setPlaceholder('Type your prompt here...')
+                    .inputEl.rows = 6;
+            });
+
+        new Setting(contentEl)
+            .addButton(btn => {
+                btn
+                    .setButtonText('Execute')
+                    .setCta()
+                    .onClick(() => {
+                        const promptText = promptInput.controlEl.querySelector('textarea')!.value.trim();
+                        if (promptText) {
+                            this.close();
+                            this.plugin.executePrompt({promptText: promptText, useSelectionAsInstruction: true, name: "AdHoc Prompt"}, this.editor);
+                        } else {
+                            new Notice('Please enter a prompt.');
+                        }
+                    });
+            })
+            .addButton(btn => {
+                btn
+                    .setButtonText('Cancel')
+                    .onClick(() => {
+                        this.close();
+                    });
+            });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}
