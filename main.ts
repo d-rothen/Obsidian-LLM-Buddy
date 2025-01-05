@@ -1,11 +1,12 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import { Anthropic } from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import * as YAML from 'yaml';
 
 interface AnthropicPluginSettings {
     maxTokensToSample: number;
 	betas: string;
-	prompts: [],
+	prompts: Prompt[];
     anthropicApiKey: string;
     deepseekApiKey: string;
     openaiApiKey: string;
@@ -22,6 +23,16 @@ interface Prompt {
     llmProvider: string;
     model: string;
 }
+
+/** 
+ * Map of the known "baseURL" for each provider (for openai sdk).
+ * Anthropic is separate (we use the anthropic SDK).
+ */
+const ProviderBaseURLMap: Record<string, string> = {
+    'openai': 'https://api.openai.com',
+    'deepseek': 'https://api.deepseek.com',
+    'anthropic': 'https://api.anthropic.com'
+};
 
 const DEFAULT_SETTINGS: AnthropicPluginSettings = {
     anthropicApiKey: '',
@@ -303,55 +314,127 @@ export default class AnthropicPlugin extends Plugin {
     async getPromptStream(systemPrompt: string, contentArray: any[], llmProvider: string, model: string) {
         switch (llmProvider) {
             case 'deepseek':
-                return this.createDeepSeekStream(systemPrompt, contentArray, model);
+                return this.createOpenAIorDeepSeekStream(llmProvider, systemPrompt, contentArray, model);
             case 'openai':
-                return this.createOpenAIStream(systemPrompt, contentArray, model);
+                return this.createOpenAIorDeepSeekStream(llmProvider, systemPrompt, contentArray, model);
             case 'anthropic':
+                return this.createAnthropicStream(systemPrompt, contentArray, model);
             default:
                 return this.createAnthropicStream(systemPrompt, contentArray, model);
         }
     }
 
-/**
-     * Create a *DeepSeek* streaming request/iterator.
-     */
-    async createDeepSeekStream(systemPrompt: string, contentArray: any[], model: string) {
-        const schema = {
-            model: model,
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: JSON.stringify(contentArray) }
-            ],
-            stream: true,
-            max_tokens: this.settings.maxTokensToSample,
-            temperature: 0.5,
-            top_p: 0.95,
-            response_format: { type: "text" },
-            tools: null,
-            presence_penalty: 0,
-            frequency_penalty: 0,
-            stop: null,
-            tool_choice: null,
-            logprobs: null,
-            top_logprobs: null
-        };
+    getProvidersBaseURL(provider: string) {
+        switch (provider) {
+            case 'deepseek':
+                return ProviderBaseURLMap.deepseek;
+            case 'openai':
+                return ProviderBaseURLMap.openai;
+            case 'anthropic':
+                return ProviderBaseURLMap.anthropic;
+            default:
+                return ProviderBaseURLMap.openai;
+        }
+    }
 
-        const response = await fetch(LLMApiMap.deepseek, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.settings.deepseekApiKey}`
-            },
-            body: JSON.stringify(schema),
+    getProvidersApiKey(provider: string) {
+        switch (provider) {
+            case 'deepseek':
+                return this.settings.deepseekApiKey;
+            case 'openai':
+                return this.settings.openaiApiKey;
+            case 'anthropic':
+                return this.settings.anthropicApiKey;
+            default:
+                return this.settings.openaiApiKey;
+        }
+    }
+
+    async createOpenAIorDeepSeekStream(
+        provider: string,
+        systemPrompt: string,
+        contentArray: any[],
+        promptModel?: string
+    ) {
+        // For deepseek: baseURL='https://api.deepseek.com', apiKey= this.settings.deepseekApiKey
+        // For openai:    baseURL='https://api.openai.com',   apiKey= this.settings.openaiApiKey
+        const baseURL = this.getProvidersBaseURL(provider);
+        let apiKey = this.getProvidersApiKey(provider); // default
+        // The user might have set a custom model for the prompt, or fallback to plugin settings
+        const model = promptModel;
+
+        // Create the openai client
+        const openai = new OpenAI({
+            baseURL,
+            apiKey,
+            dangerouslyAllowBrowser: true
         });
 
-        if (!response.ok) {
-            throw new Error(`DeepSeek API error: ${response.status} ${response.statusText}`);
-        }
+        // Convert your system prompt + user content to an array of {role, content} messages
+        // Typically: 
+        //   system => { role: "system", content: systemPrompt }
+        //   user   => { role: "user", content: "...some text..." }
+        // If you have multiple steps, you can push them. For simplicity:
+        const messages = [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: contentArray }
+        ];
 
-        // Return an async generator that yields token-like chunks
-        return this.parseDeepSeekJSONSSE(response.body);
+        // Call openai with streaming
+        // See: https://www.npmjs.com/package/openai?activeTab=readme#streaming-1
+        const response = await openai.chat.completions.create({
+            model,
+            messages,
+            stream: true,
+            max_tokens: this.settings.maxTokensToSample
+        });
+
+        // The openai library returns an async iterable of ChatCompletionChunk
+        // We'll return it directly, then handle iteration in executePromptStream
+        return response;
     }
+
+
+    /**
+     * Create a *DeepSeek* streaming request/iterator.
+     */
+    // async createDeepSeekStream(systemPrompt: string, contentArray: any[], model: string) {
+    //     const schema = {
+    //         model: model,
+    //         messages: [
+    //             { role: "system", content: systemPrompt },
+    //             { role: "user", content: JSON.stringify(contentArray) }
+    //         ],
+    //         stream: true,
+    //         max_tokens: this.settings.maxTokensToSample,
+    //         temperature: 0.5,
+    //         top_p: 0.95,
+    //         response_format: { type: "text" },
+    //         tools: null,
+    //         presence_penalty: 0,
+    //         frequency_penalty: 0,
+    //         stop: null,
+    //         tool_choice: null,
+    //         logprobs: null,
+    //         top_logprobs: null
+    //     };
+
+    //     const response = await fetch(LLMApiMap.deepseek, {
+    //         method: 'POST',
+    //         headers: {
+    //             'Content-Type': 'application/json',
+    //             'Authorization': `Bearer ${this.settings.deepseekApiKey}`
+    //         },
+    //         body: JSON.stringify(schema),
+    //     });
+
+    //     if (!response.ok) {
+    //         throw new Error(`DeepSeek API error: ${response.status} ${response.statusText}`);
+    //     }
+
+    //     // Return an async generator that yields token-like chunks
+    //     return this.parseDeepSeekJSONSSE(response.body);
+    // }
 
     async createAnthropicStream(systemPrompt: string, contentArray: any[], model: string) {
         return await this.anthropic.beta.messages.create({
@@ -369,32 +452,32 @@ export default class AnthropicPlugin extends Plugin {
     /**
      * Create an *OpenAI* streaming request/iterator.
      */
-    async createOpenAIStream(systemPrompt: string, contentArray: any[], model: string) {
-        const body = {
-            model: model, 
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: JSON.stringify(contentArray) }
-            ],
-            max_tokens: this.settings.maxTokensToSample,
-            stream: true,
-        };
+    // async createOpenAIStream(systemPrompt: string, contentArray: any[], model: string) {
+    //     const body = {
+    //         model: model, 
+    //         messages: [
+    //             { role: "system", content: systemPrompt },
+    //             { role: "user", content: JSON.stringify(contentArray) }
+    //         ],
+    //         max_tokens: this.settings.maxTokensToSample,
+    //         stream: true,
+    //     };
 
-        const response = await fetch(LLMApiMap.openai, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.settings.openaiApiKey}`
-            },
-            body: JSON.stringify(body),
-        });
+    //     const response = await fetch(LLMApiMap.openai, {
+    //         method: 'POST',
+    //         headers: {
+    //             'Content-Type': 'application/json',
+    //             'Authorization': `Bearer ${this.settings.openaiApiKey}`
+    //         },
+    //         body: JSON.stringify(body),
+    //     });
 
-        if (!response.ok) {
-            throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
-        }
+    //     if (!response.ok) {
+    //         throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+    //     }
 
-        return this.parseOpenAISSE(response.body);
-    }
+    //     return this.parseOpenAISSE(response.body);
+    // }
 
     /**
      * Execute the prompt with streaming, removing the selection in the editor
@@ -410,25 +493,23 @@ export default class AnthropicPlugin extends Plugin {
             // Route to the correct provider
             const stream = await this.getPromptStream(systemPrompt, contentArray, llmProvider, model);
 
-            // Because Anthropic returns an async iterable of objects,
-            // and DeepSeek/OpenAI need SSE parsing, we unify them below:
-            for await (const chunk of stream) {
-                /**
-                 * Anthropic chunk example:
-                 *   { type: 'content_block_delta', delta: { text: 'some text' } }
-                 * DeepSeek/OpenAI SSE parse yields the same shape for simplicity.
-                 */
-                if (chunk.type === 'content_block_start') {//|| chunk.type === 'content_block_delta') {
-                    let text = '';
-                    if ('delta' in chunk && chunk.delta && 'text' in chunk.delta) {
-                        text = chunk.delta.text;
+            if (llmProvider === 'anthropic') {
+                // Anthropic chunk objects typically have chunk.type and chunk.delta?.text
+                for await (const chunk of stream) {
+                    if (chunk.type === 'content_block_start' || chunk.type === 'content_block_delta') {
+                        let text = chunk.delta?.text || '';
+                        editor.replaceSelection(text);
                     }
-                    editor.replaceSelection(text);
-                } else if (chunk.type === 'content_block_delta') {
-                    const text = chunk.delta.text;
-                    editor.replaceSelection(text);
                 }
-            
+            } else {
+                // openai + deepseek => ChatCompletionChunk
+                // Typically chunk.choices[0].delta?.content
+                for await (const chunk of stream) {
+                    const partial = chunk.choices?.[0]?.delta?.content;
+                    if (partial) {
+                        editor.replaceSelection(partial);
+                    }
+                }
             }
         } catch (error) {
             new Notice('Error: ' + (error as Error).message);
