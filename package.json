@@ -23,8 +23,6 @@
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.31.0",
-		"install": "^0.13.0",
-		"npm": "^10.8.3",
 		"openai": "^4.77.3",
 		"yaml": "^2.0.0"
 	}
