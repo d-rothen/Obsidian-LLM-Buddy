@@ -1,96 +1,78 @@
-# Obsidian Sample Plugin
+# Obsidian LLM Buddy
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Obsidian plugin that integrates multiple LLM providers (Anthropic, OpenAI, DeepSeek) into your note-taking workflow. Execute custom prompts with context-aware capabilities and (partial) support for images and PDFs.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## Features
 
-**Note:** The Obsidian API is still in early alpha and is subject to change at any time!
+- Support for multiple LLM providers:
+  - Anthropic (Claude)
+  - OpenAI
+  - DeepSeek
+- 📝 Configurable prompts
+- 🖼️ Image and PDF support (provider dependent, WIP)
+- ✨ Context-aware prompting
+- 🎯 Selection-based operations
+- 💫 Streaming responses
+- 🎨 Ad-hoc prompt execution (WIP)
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+## Installation
 
-## First time developing plugins?
+1. Clone this repository
+2. run `npm install`
+3. run `npm run dev`
+4. Copy `manifest.json` and `main.js` to `[Vault]/.obsidian/plugins/[llm-buddy]/`
 
-Quick starting guide for new plugin devs:
+## Configuration
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+- Check the configuration window in Obsidians plugin settings pane.
+- Note: Keybinds have to be set in the Options>Hotkeys pane. (Just search for "LLM Buddy")
 
-## Releasing new releases
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+### Custom Prompts
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+Create and configure custom prompts:
 
-## Adding your plugin to the community plugin list
+1. Go to Settings > LLM Buddy > Custom Prompts
+2. Click "Add Prompt"
+3. Configure:
+   - Name: The command name that will appear in the command palette
+   - Prompt Text: Your system prompt (Instruction what the model should output)
+   - LLM Provider: Choose between Anthropic, OpenAI, or DeepSeek
+   - Model: Specify the model to use
+   - Selection Mode: Toggle whether only the selected text is sent or the entire file as context too.
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## Usage
 
-## How to use
+Use the defined keybinds to execute the prompts. Make sure (if you dont use selection mode) that you toggle the setting for sending the entire note as context.
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+## Features in Detail
 
-## Manually installing the plugin
+### Context-Aware Prompting
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+The plugin can use:
+- Note title
+- Tags
+- Note content
+- Selected text
+- Linked images and PDFs
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+### Selection Modes
 
-## Funding URL
+- **Normal Mode**: Selected text is used as context
+- **Instruction Mode**: Selected text is used as instruction, and the rest of the note provides context
 
-You can include funding URLs where people who use your plugin can financially support it.
+### File Support
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+- Supports embedded images (png, jpg, jpeg, gif, bmp, svg)
+- Supports PDF files
+- Files must be linked in the note using standard Obsidian syntax: `![[filename.ext]]`
 
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
-```
 
-If you have multiple URLs, you can also do:
+### Example Prompt
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
-```
+Below is an example prompt I use to have an LLM write f.e. a Theorem I was missing in rendered TeX.
+(Remember to always double check if the LLM is not hallucinating in any case...)
 
-## API Documentation
+- Prompt Text: `You are a helpful AI assistant. Assist with the finishing of the following note. Please structure the note in a way that is (obsidian-) markdown compatible. If the last sentence in the note is a specific instruction, follow that instruction, else simply fill out the remaining content such that it adheres to the title and general idea of the note. Try to keep the level of detail consistent with the note. If the level of detail is not discernable, assume that everything should be explained from the ground up and - apart from the most fundamental facts - be part of the note. Note, that when TeX code is required, use MathJax compatible notation. Inline TeX is done via ${content}$ while block TeX is done via $${content}$$. The file title and content will be presented in the following way: Title: [...]\\nContent[...]. When writing a note, do your best to structure the information in a concise manner - and go deep and in-depth when needed. Since I am using Obsidian for notetaking, feel free to make use of its features, especially referencing other notes like so for some Topic X: [[Topic X]] (Assume for any topic you need to explain the new note, this [[Topic X]] would already exist and reference it. Do not outsource the whole explanation to that reference but rather incorporate it in the explanation). The goal is to create a knowledge corpus that allows me to quickly catch up on scientific topics when I revisit them later. Please adhere to the following style guides:\\n When writing in an empty node - or under a particular header where there is need for a formal (i.e. mathematical or physics) definition, do a concise scientific definition (as one may see in a lecture's script) inside a definition paragraph that looks like this:\\n>[!definition] $DefinitionTitle\\n>Line1\\n>Line2 etc. Note the need for > to do indentation. When such a block is finished, simply use \\n\\n to write below it. Instead of [!definition], the following callouts are available as well (used the same as for the definition callout: [!{callout}] ):\\n<callouts>axiom, definition, lemma, proposition, theorem, corollary, claim, assumption, example, exercise, conjecture, hypothesis, remark</callouts>.\\nPrioritize using callouts over plain text or bullet-points whenever possible. If you deem a topic to be complex, feel free to be very extensive on covering the subject. Please write the response without any preamble..`
 
-See https://github.com/obsidianmd/obsidian-api
+---
